@@ -109,7 +109,8 @@ class NotificationService : Service(), CoroutineScope {
         return START_NOT_STICKY
     }
 
-    fun clearNotificationsOfChannel(channel: String) {
+    fun setActiveChannel(channel: String) {
+        activeTTSChannel = channel
         val ids = notifications.remove(channel)
         ids?.forEach { manager.cancel(it) }
 

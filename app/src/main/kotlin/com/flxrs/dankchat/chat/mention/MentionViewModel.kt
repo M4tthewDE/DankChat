@@ -15,11 +15,15 @@ class MentionViewModel @Inject constructor(chatRepository: ChatRepository) : Vie
     private val coroutineExceptionHandler = CoroutineExceptionHandler { _, t ->
         Log.e(TAG, Log.getStackTraceString(t))
     }
+
+
     val mentions: LiveData<List<ChatItem>> = chatRepository.mentions.asLiveData(coroutineExceptionHandler)
     val whispers: LiveData<List<ChatItem>> = chatRepository.whispers.asLiveData(coroutineExceptionHandler)
+
+    val hasMentions: LiveData<Boolean> = chatRepository.hasMentions.asLiveData(coroutineExceptionHandler)
+    val hasWhispers: LiveData<Boolean> = chatRepository.hasWhispers.asLiveData(coroutineExceptionHandler)
 
     companion object {
         private val TAG = MentionViewModel::class.java.simpleName
     }
-
 }

@@ -13,7 +13,6 @@ import androidx.navigation.findNavController
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
-import com.flxrs.dankchat.chat.mention.MentionViewModel
 import com.flxrs.dankchat.preferences.*
 import com.flxrs.dankchat.service.NotificationService
 import com.flxrs.dankchat.utils.dialog.AddChannelDialogResultHandler
@@ -25,14 +24,13 @@ import dagger.hilt.android.AndroidEntryPoint
 class MainActivity : AppCompatActivity(R.layout.main_activity), AddChannelDialogResultHandler, MessageHistoryDisclaimerResultHandler, PreferenceFragmentCompat.OnPreferenceStartFragmentCallback {
     private val channels = mutableListOf<String>()
     private val viewModel: DankChatViewModel by viewModels()
-    private val mentionViewModel: MentionViewModel by viewModels()
     private lateinit var twitchPreferences: DankChatPreferenceStore
     private lateinit var broadcastReceiver: BroadcastReceiver
-    private var notificationService: NotificationService? = null
     private val pendingChannelsToClear = mutableListOf<String>()
     private val navController: NavController by lazy { findNavController(R.id.main_content) }
 
     private val twitchServiceConnection = TwitchServiceConnection()
+    var notificationService: NotificationService? = null
     var isBound = false
     var channelToOpen = ""
 
@@ -55,8 +53,6 @@ class MainActivity : AppCompatActivity(R.layout.main_activity), AddChannelDialog
                 channels.addAll(it)
                 twitchPreferences.channels = null
             }
-
-        viewModel.activeChannel.observe(this) { notificationService?.activeTTSChannel = it }
     }
 
     override fun onDestroy() {
@@ -132,7 +128,7 @@ class MainActivity : AppCompatActivity(R.layout.main_activity), AddChannelDialog
     }
 
     fun clearNotificationsOfChannel(channel: String) = when {
-        isBound && notificationService != null -> notificationService?.clearNotificationsOfChannel(channel)
+        isBound && notificationService != null -> notificationService?.setActiveChannel(channel)
         else -> pendingChannelsToClear += channel
     }
 
@@ -152,7 +148,7 @@ class MainActivity : AppCompatActivity(R.layout.main_activity), AddChannelDialog
             isBound = true
 
             if (pendingChannelsToClear.isNotEmpty()) {
-                pendingChannelsToClear.forEach { notificationService?.clearNotificationsOfChannel(it) }
+                pendingChannelsToClear.forEach { notificationService?.setActiveChannel(it) }
                 pendingChannelsToClear.clear()
             }
 

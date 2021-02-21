@@ -27,6 +27,9 @@ import kotlin.system.measureTimeMillis
 
 class ChatRepository(private val apiManager: ApiManager, private val emoteManager: EmoteManager) {
 
+    private val _activeChannel = MutableStateFlow<String>("")
+    private val _channels = MutableStateFlow<List<String>>(emptyList())
+
     private val _notificationsFlow = MutableSharedFlow<List<ChatItem>>(0, extraBufferCapacity = 10)
     private val _channelMentionCount = MutableSharedFlow<MutableMap<String, Int>>(1, onBufferOverflow = BufferOverflow.DROP_OLDEST).apply { tryEmit(mutableMapOf()) }
     private val messages = mutableMapOf<String, MutableStateFlow<List<ChatItem>>>()
@@ -50,8 +53,15 @@ class ChatRepository(private val apiManager: ApiManager, private val emoteManage
     private var blacklistEntries = listOf<Mention>()
     private var name: String = ""
 
+    val activeChannel: StateFlow<String>
+        get() = _activeChannel.asStateFlow()
+    val channels: StateFlow<List<String>>
+        get() = _channels.asStateFlow()
+
     val notificationsFlow: SharedFlow<List<ChatItem>> = _notificationsFlow.asSharedFlow()
     val channelMentionCount: SharedFlow<Map<String, Int>> = _channelMentionCount.asSharedFlow()
+    val hasMentions = channelMentionCount.map { it.any { channel -> channel.key != "w" && channel.value > 0 } }
+    val hasWhispers = channelMentionCount.map { it.getOrDefault("w", 0) > 0 }
     val mentions: StateFlow<List<ChatItem>>
         get() = _mentions
     val whispers: StateFlow<List<ChatItem>>
@@ -110,6 +120,14 @@ class ChatRepository(private val apiManager: ApiManager, private val emoteManage
 
             }
         }.let { Log.i(TAG, "Loading chatters for #$channel took $it ms") }
+    }
+
+    fun setActiveChannel(channel: String?) {
+        _activeChannel.value = channel
+    }
+
+    fun setChannels(channels: List<String>) {
+        _channels.value = channels
     }
 
     fun removeChannelData(channel: String) {

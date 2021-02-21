@@ -6,8 +6,10 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import androidx.fragment.app.viewModels
 import androidx.viewpager2.widget.ViewPager2
 import com.flxrs.dankchat.DankChatViewModel
+import com.flxrs.dankchat.MainViewModel
 import com.flxrs.dankchat.R
 import com.flxrs.dankchat.databinding.MentionFragmentBinding
 import com.google.android.material.tabs.TabLayoutMediator
@@ -16,7 +18,10 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MentionFragment : Fragment() {
 
-    private val dankChatViewModel: DankChatViewModel by activityViewModels()
+    private val mainViewModel: MainViewModel by viewModels(
+        ownerProducer = { requireParentFragment() }
+    )
+    private val mentionViewModel: MentionViewModel by viewModels()
     private var bindingRef: MentionFragmentBinding? = null
     private val binding get() = bindingRef!!
     private lateinit var tabAdapter: MentionTabAdapter
@@ -35,7 +40,7 @@ class MentionFragment : Fragment() {
             }.apply { attach() }
         }
 
-        dankChatViewModel.apply {
+        mentionViewModel.apply {
             hasMentions.observe(viewLifecycleOwner) {
                 when {
                     it -> if (binding.mentionTabs.selectedTabPosition != 0) {
@@ -64,7 +69,7 @@ class MentionFragment : Fragment() {
         offscreenPageLimit = 2
         registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
-                dankChatViewModel.setWhisperTabSelected(position == 1)
+                mainViewModel.setWhisperTabSelected(position == 1)
                 bindingRef?.mentionTabs?.getTabAt(position)?.removeBadge()
             }
         })
