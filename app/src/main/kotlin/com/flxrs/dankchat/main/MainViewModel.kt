@@ -1,7 +1,8 @@
-package com.flxrs.dankchat
+package com.flxrs.dankchat.main
 
 import android.util.Log
 import androidx.lifecycle.*
+import com.flxrs.dankchat.chat.menu.EmoteItem
 import com.flxrs.dankchat.chat.menu.EmoteMenuTab
 import com.flxrs.dankchat.chat.suggestion.Suggestion
 import com.flxrs.dankchat.service.ChatRepository
@@ -12,7 +13,10 @@ import com.flxrs.dankchat.service.state.ImageUploadState
 import com.flxrs.dankchat.service.twitch.connection.SystemMessageType
 import com.flxrs.dankchat.service.twitch.emote.EmoteType
 import com.flxrs.dankchat.utils.SingleLiveEvent
-import com.flxrs.dankchat.utils.extensions.*
+import com.flxrs.dankchat.utils.extensions.moveToFront
+import com.flxrs.dankchat.utils.extensions.removeOAuthSuffix
+import com.flxrs.dankchat.utils.extensions.timer
+import com.flxrs.dankchat.utils.extensions.toEmoteItems
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -40,9 +44,12 @@ class MainViewModel @Inject constructor(
         }
     }
     private var fetchTimerJob: Job? = null
+    private val channels: StateFlow<List<String>> = chatRepository.channels
 
-    val activeChannel = chatRepository.activeChannel
-    val channels = chatRepository.channels
+    var started = false
+
+    // TODO move shit to repo
+    val activeChannel: StateFlow<String> = chatRepository.activeChannel
     val channelMentionCount = chatRepository.channelMentionCount.asLiveData(coroutineExceptionHandler)
     val shouldColorNotification: LiveData<Boolean> = liveData(coroutineExceptionHandler) {
         emit(false)
@@ -60,7 +67,7 @@ class MainViewModel @Inject constructor(
     private val streamInfoEnabled = MutableStateFlow(true)
     private val roomStateEnabled = MutableStateFlow(true)
     private val streamData = MutableStateFlow<List<StreamData>>(emptyList())
-    private val currentSuggestionChannel = MutableStateFlow<String>("")
+    private val currentSuggestionChannel = MutableStateFlow("")
 
     private val emotes = currentSuggestionChannel.flatMapLatest { dataRepository.getEmotes(it) }
     private val roomState = currentSuggestionChannel.flatMapLatest { chatRepository.getRoomState(it) }
@@ -70,6 +77,7 @@ class MainViewModel @Inject constructor(
         streamData.find { it.channel == activeChannel }?.data ?: ""
     }
 
+    // TODO command repository
     private val emoteSuggestions = emotes.mapLatest { emotes ->
         emotes.distinctBy { it.code }
             .map { Suggestion.EmoteSuggestion(it) }
@@ -80,8 +88,6 @@ class MainViewModel @Inject constructor(
     private val supibotCommandSuggestions = supibotCommands.mapLatest { commands ->
         commands.map { Suggestion.CommandSuggestion("$$it") }
     }
-
-    var lastMessage: Map<String, String> = chatRepository.lastMessage
 
     val errorEvent: LiveData<Throwable>
         get() = _errorEvent
@@ -106,7 +112,10 @@ class MainViewModel @Inject constructor(
         addSource(_dataLoadingEvent) { value = it is DataLoadingState.Loading || _imageUploadedEvent.value is ImageUploadState.Loading }
     }
 
-    val connectionState = activeChannel.flatMapLatest { chatRepository.getConnectionState(it) }
+    val connectionState = activeChannel
+        .flatMapLatest { chatRepository.getConnectionState(it) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), SystemMessageType.DISCONNECTED)
+
     val canType = combine(connectionState, mentionSheetOpen, whisperTabSelected) { connectionState, mentionSheetOpen, whisperTabSelected ->
         val connected = connectionState == SystemMessageType.CONNECTED
         (!mentionSheetOpen && connected) || (whisperTabSelected && connected)
@@ -127,51 +136,40 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    val bottomText = MediatorLiveData<String>().apply {
-        addSource(roomStateEnabled) { value = buildBottomText() }
-        addSource(streamInfoEnabled) { value = buildBottomText() }
-        addSource(roomState) { value = buildBottomText() }
-        addSource(currentStreamInformation) { value = buildBottomText() }
-        addSource(mentionSheetOpen) { value = buildBottomText() }
-    }
-    val bottomTextEnabled = MediatorLiveData<Boolean>().apply {
-        addSource(roomStateEnabled) { value = shouldShowBottomText(stateEnabled = it) }
-        addSource(streamInfoEnabled) { value = shouldShowBottomText(infoEnabled = it) }
-        addSource(mentionSheetOpen) { value = shouldShowBottomText(mentionOpen = it) }
-        addSource(bottomText) { value = shouldShowBottomText(text = it) }
-    }
-    val shouldShowFullscreenHelper = MediatorLiveData<Boolean>().apply {
-        addSource(shouldShowInput) { value = shouldShowFullscreenHint(showInput = it) }
-        addSource(bottomTextEnabled) { value = shouldShowFullscreenHint(showBottomText = it) }
-        addSource(bottomText) { value = shouldShowFullscreenHint(bottomTextEmpty = it.isEmpty()) }
-        addSource(shouldShowViewPager) { value = shouldShowFullscreenHint(showViewPager = it) }
-    }
-
-    val suggestions = MediatorLiveData<List<Suggestion>>().apply {
-        addSource(emoteSuggestions) { value = userSuggestions.asSuggestionOrEmpty + supibotCommandSuggestions.asSuggestionOrEmpty + it }
-        addSource(userSuggestions) { value = it + supibotCommandSuggestions.asSuggestionOrEmpty + emoteSuggestions.asSuggestionOrEmpty }
-        addSource(supibotCommandSuggestions) { value = userSuggestions.asSuggestionOrEmpty + it + emoteSuggestions.asSuggestionOrEmpty }
-    }
-
-    val emoteItems = emotes.switchMap { emotes ->
-        liveData(Dispatchers.Default) {
-            val groupedByType = emotes.groupBy {
-                when (it.emoteType) {
-                    is EmoteType.ChannelTwitchEmote -> EmoteMenuTab.SUBS
-                    is EmoteType.ChannelFFZEmote, is EmoteType.ChannelBTTVEmote -> EmoteMenuTab.CHANNEL
-                    else -> EmoteMenuTab.GLOBAL
-                }
-            }
-
-
-            val groupedWithHeaders = mutableListOf(
-                groupedByType[EmoteMenuTab.SUBS].moveToFront(activeChannel.value).toEmoteItems(),
-                groupedByType[EmoteMenuTab.CHANNEL].toEmoteItems(),
-                groupedByType[EmoteMenuTab.GLOBAL].toEmoteItems()
-            )
-            emit(groupedWithHeaders)
+    val shouldShowBottomText: Flow<Boolean> =
+        combine(roomStateEnabled, streamInfoEnabled, mentionSheetOpen, currentBottomText) { roomStateEnabled, streamInfoEnabled, mentionSheetOpen, bottomText ->
+            (roomStateEnabled || streamInfoEnabled) && !mentionSheetOpen && bottomText.isNotBlank()
         }
-    }
+
+    val shouldShowFullscreenHelper: Flow<Boolean> =
+        combine(shouldShowInput, shouldShowBottomText, currentBottomText, shouldShowViewPager) { shouldShowInput, shouldShowBottomText, bottomText, shouldShowViewPager ->
+            !shouldShowInput && shouldShowBottomText && bottomText.isNotBlank() && shouldShowViewPager
+        }
+
+    val shouldShowEmoteMenuIcon: Flow<Boolean> =
+        combine(canType, mentionSheetOpen) { canType, mentionSheetOpen ->
+            canType && !mentionSheetOpen
+        }
+
+    val suggestions: Flow<List<Suggestion>> =
+        combine(emoteSuggestions, userSuggestions, supibotCommandSuggestions) { emoteSuggestions, userSuggestions, supibotCommandSuggestions ->
+            userSuggestions + supibotCommandSuggestions + emoteSuggestions
+        }
+
+    val emoteItems: Flow<List<List<EmoteItem>>> = emotes.map { emotes ->
+        val groupedByType = emotes.groupBy {
+            when (it.emoteType) {
+                is EmoteType.ChannelTwitchEmote -> EmoteMenuTab.SUBS
+                is EmoteType.ChannelFFZEmote, is EmoteType.ChannelBTTVEmote -> EmoteMenuTab.CHANNEL
+                else -> EmoteMenuTab.GLOBAL
+            }
+        }
+        mutableListOf(
+            groupedByType[EmoteMenuTab.SUBS].moveToFront(activeChannel.value).toEmoteItems(),
+            groupedByType[EmoteMenuTab.CHANNEL].toEmoteItems(),
+            groupedByType[EmoteMenuTab.GLOBAL].toEmoteItems()
+        )
+    }.flowOn(Dispatchers.Default)
 
     fun loadData(dataLoadingParameters: DataLoadingState.Parameters) = loadData(
         oAuth = dataLoadingParameters.oAuth,
@@ -186,7 +184,7 @@ class MainViewModel @Inject constructor(
         oAuth: String,
         id: String,
         name: String,
-        channelList: List<String> = channels.value ?: emptyList(),
+        channelList: List<String> = channels.value,
         loadTwitchData: Boolean,
         loadHistory: Boolean,
         loadSupibot: Boolean,
@@ -215,12 +213,16 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun getLastMessage() = chatRepository.getLastMessage()
+
     fun setSupibotSuggestions(enabled: Boolean) = viewModelScope.launch(coroutineExceptionHandler) {
         when {
             enabled -> dataRepository.loadSupibotCommands()
             else -> dataRepository.clearSupibotCommands()
         }
     }
+
+    fun getChannels() = chatRepository.channels.value
 
     fun setActiveChannel(channel: String) {
         chatRepository.setActiveChannel(channel)
@@ -253,7 +255,7 @@ class MainViewModel @Inject constructor(
 
     fun setWhisperTabSelected(open: Boolean) {
         whisperTabSelected.value = open
-        if (mentionSheetOpen.value == true) {
+        if (mentionSheetOpen.value) {
             when {
                 open -> chatRepository.clearMentionCount("w")
                 else -> chatRepository.clearMentionCounts()
@@ -265,43 +267,26 @@ class MainViewModel @Inject constructor(
 
     fun clearMentionCount(channel: String) = chatRepository.clearMentionCount(channel)
 
-    fun joinChannel(channel: String? = activeChannel.value): List<String>? {
-        if (channel == null) return null
-        val current = channels.value ?: emptyList()
-        val plus = current + channel
-
-        channels.value = current + channel
-        chatRepository.joinChannel(channel)
-        return plus
-    }
-
-    fun partChannel(): List<String>? {
-        val channel = activeChannel.value ?: return null
-        val current = channels.value ?: emptyList()
-        val minus = current - channel
-
-        channels.value = minus
-        chatRepository.partChannel(channel)
-        chatRepository.removeChannelData(channel)
-        return minus
-    }
-
-    fun sendMessage(channel: String, message: String) =
-        chatRepository.sendMessage(channel, message)
-
-
-    fun close(name: String, oAuth: String, userId: String, loadTwitchData: Boolean = false) {
-        val channels = channels.value ?: emptyList()
-        val didClose = chatRepository.close { connectAndJoinChannels(name, oAuth, channels) }
-        if (!didClose) {
-            connectAndJoinChannels(name, oAuth, channels, forceConnect = true)
+    fun reconnect() = chatRepository.reconnect(false)
+    fun joinChannel(channel: String): List<String> = chatRepository.joinChannel(channel)
+    fun partChannel(): List<String> = chatRepository.partActiveChannel()
+    fun trySendMessage(message: String) {
+        if (mentionSheetOpen.value && whisperTabSelected.value && !message.startsWith("/w ")) {
+            return
         }
+
+        chatRepository.sendMessage(message)
+    }
+
+
+    fun closeAndReconnect(name: String, oAuth: String, userId: String, loadTwitchData: Boolean = false) {
+        chatRepository.closeAndReconnect(name, oAuth)
 
         if (loadTwitchData && oAuth.isNotBlank()) loadData(
             oAuth = oAuth,
             id = userId,
             name = name,
-            channelList = channels,
+            channelList = channels.value,
             loadTwitchData = true,
             loadHistory = false,
             loadSupibot = false
@@ -350,17 +335,18 @@ class MainViewModel @Inject constructor(
 
     suspend fun fetchStreamData(oAuth: String, stringBuilder: (viewers: Int) -> String) = withContext(coroutineExceptionHandler) {
         fetchTimerJob?.cancel()
-        val channels = channels.value ?: return@withContext
+        val channels = channels.value
         val fixedOAuth = oAuth.removeOAuthSuffix
 
         fetchTimerJob = timer(STREAM_REFRESH_RATE) {
-            val data = mutableMapOf<String, String>()
-            channels.forEach { channel ->
-                apiManager.getStream(fixedOAuth, channel)?.let {
-                    data[channel] = stringBuilder(it.viewers)
+            val data = channels.map { channel ->
+                async {
+                    apiManager.getStream(fixedOAuth, channel)?.let {
+                        StreamData(channel = channel, data = stringBuilder(it.viewers))
+                    }
                 }
             }
-            streamData.value = data
+            streamData.value = data.awaitAll().filterNotNull()
         }
     }
 
@@ -377,42 +363,6 @@ class MainViewModel @Inject constructor(
             launch(coroutineExceptionHandler) { dataRepository.loadChannelData(it, oAuth) }
         }
     }
-
-    private fun buildBottomText(): String {
-        var roomStateText = ""
-        var streamInfoText = ""
-
-        roomState.value?.let {
-            if (roomStateEnabled.value == true) roomStateText = it.toString()
-        }
-        currentStreamInformation.value?.let {
-            if (streamInfoEnabled.value == true) streamInfoText = it
-        }
-
-        val stateNotBlank = roomStateText.isNotBlank()
-        val streamNotBlank = streamInfoText.isNotBlank()
-
-        return when {
-            stateNotBlank && streamNotBlank -> "$roomStateText - $streamInfoText"
-            stateNotBlank -> roomStateText
-            streamNotBlank -> streamInfoText
-            else -> ""
-        }
-    }
-
-    private fun shouldShowFullscreenHint(
-        showInput: Boolean = shouldShowInput.value ?: true,
-        showBottomText: Boolean = bottomTextEnabled.value ?: true,
-        bottomTextEmpty: Boolean = bottomText.value?.isEmpty() ?: false,
-        showViewPager: Boolean = shouldShowViewPager.value ?: true
-    ): Boolean = !showInput && showBottomText && !bottomTextEmpty && showViewPager
-
-    private fun shouldShowBottomText(
-        stateEnabled: Boolean = roomStateEnabled.value ?: true,
-        infoEnabled: Boolean = streamInfoEnabled.value ?: true,
-        mentionOpen: Boolean = mentionSheetOpen.value ?: false,
-        text: String = bottomText.value ?: ""
-    ): Boolean = (stateEnabled || infoEnabled) && !mentionOpen && text.isNotBlank()
 
     companion object {
         private val TAG = MainViewModel::class.java.simpleName

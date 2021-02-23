@@ -7,7 +7,7 @@ import android.view.ViewGroup
 import android.widget.TextView
 import androidx.core.os.bundleOf
 import androidx.fragment.app.viewModels
-import com.flxrs.dankchat.MainFragment
+import com.flxrs.dankchat.main.MainFragment
 import com.flxrs.dankchat.databinding.UserPopupBottomsheetBinding
 import com.flxrs.dankchat.utils.loadImage
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment

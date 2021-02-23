@@ -1,4 +1,4 @@
-package com.flxrs.dankchat
+package com.flxrs.dankchat.main
 
 import android.Manifest
 import android.app.Activity
@@ -12,6 +12,7 @@ import android.provider.MediaStore
 import android.text.SpannableStringBuilder
 import android.text.method.LinkMovementMethod
 import android.text.util.Linkify
+import android.util.Log
 import android.view.*
 import android.view.inputmethod.EditorInfo
 import android.webkit.MimeTypeMap
@@ -37,6 +38,8 @@ import androidx.navigation.NavController
 import androidx.navigation.fragment.findNavController
 import androidx.preference.PreferenceManager
 import androidx.viewpager2.widget.ViewPager2
+import com.flxrs.dankchat.DankChatViewModel
+import com.flxrs.dankchat.R
 import com.flxrs.dankchat.chat.ChatTabAdapter
 import com.flxrs.dankchat.chat.menu.EmoteMenuAdapter
 import com.flxrs.dankchat.chat.menu.EmoteMenuTab
@@ -121,7 +124,6 @@ class MainFragment : Fragment() {
         emoteMenuAdapter = EmoteMenuAdapter(::insertEmote)
         bindingRef = MainFragmentBinding.inflate(inflater, container, false).apply {
             emoteMenuBottomSheetBehavior = BottomSheetBehavior.from(emoteMenuBottomSheet)
-            vm = mainViewModel
             lifecycleOwner = this@MainFragment
             chatViewpager.setup(this)
             input.setup(this)
@@ -140,13 +142,24 @@ class MainFragment : Fragment() {
         }
 
         mainViewModel.apply {
+            // TODO refactor to states for every component
             imageUploadedEvent.observe(viewLifecycleOwner, ::handleImageUploadEvent)
             dataLoadingEvent.observe(viewLifecycleOwner, ::handleDataLoadingEvent)
             showUploadProgress.observe(viewLifecycleOwner) { activity?.invalidateOptionsMenu() }
             suggestions.observe(viewLifecycleOwner, ::setSuggestions)
             emoteItems.observe(viewLifecycleOwner, emoteMenuAdapter::submitList)
             appbarEnabled.observe(viewLifecycleOwner) { changeActionBarVisibility(it) }
-            canType.observe(viewLifecycleOwner) { if (it) binding.inputLayout.setup() }
+            canType.observe(viewLifecycleOwner) {
+                binding.input.isEnabled = it
+                binding.inputLayout.isEnabled = it
+                binding.inputLayout.endIconDrawable = when {
+                    it -> ContextCompat.getDrawable(requireContext(), R.drawable.ic_send)
+                    else -> null
+                }
+                if (it) {
+                    binding.inputLayout.setup()
+                }
+            }
             connectionState.observe(viewLifecycleOwner) { hint ->
                 if (hint == SystemMessageType.NOT_LOGGED_IN && twitchPreferences.hasMessageHistoryAcknowledged) {
                     showApiChangeInformationIfNotAcknowledged()
@@ -158,15 +171,15 @@ class MainFragment : Fragment() {
                     else -> getString(R.string.hint_disconnected)
                 }
             }
-            bottomText.observe(viewLifecycleOwner) {
+            currentBottomText.observe(viewLifecycleOwner) {
                 binding.inputLayout.helperText = it
                 binding.fullscreenHintText.text = it
             }
             activeChannel.observe(viewLifecycleOwner) { channel ->
-                (activity as? MainActivity)?.notificationService?.setActiveChannel(channel)
+                (activity as? MainActivity)?.notificationService?.setActiveChannel(channel) // TODO move
                 val index = tabAdapter.titleList.indexOf(channel)
                 binding.tabs.getTabAt(index)?.removeBadge()
-                mainViewModel.clearMentionCount(it)
+                mainViewModel.clearMentionCount(channel)
             }
 
             errorEvent.observe(viewLifecycleOwner) {
@@ -188,6 +201,26 @@ class MainFragment : Fragment() {
                 }
             }
             shouldColorNotification.observe(viewLifecycleOwner) { activity?.invalidateOptionsMenu() }
+            shouldShowViewPager.observe(viewLifecycleOwner) {
+                binding.chatViewpager.isVisible = it
+                binding.addChannelsText.isVisible = !it
+            }
+            shouldShowInput.observe(viewLifecycleOwner) {
+                binding.inputLayout.isVisible = it
+            }
+            shouldShowBottomText.observe(viewLifecycleOwner) {
+                binding.inputLayout.isHelperTextEnabled = it
+            }
+            shouldShowEmoteMenuIcon.observe(viewLifecycleOwner) {
+                binding.inputLayout.startIconDrawable = when {
+                    it -> ContextCompat.getDrawable(requireContext(), R.drawable.ic_insert_emoticon)
+                    else -> null
+                }
+            }
+            shouldShowFullscreenHelper.observe(viewLifecycleOwner) {
+                binding.fullscreenHintText.isVisible = it
+            }
+
         }
 
         return binding.root
@@ -214,11 +247,9 @@ class MainFragment : Fragment() {
             twitchPreferences.userIdString = "${twitchPreferences.userId}"
         }
 
-        val channels = twitchPreferences.channelsString?.split(',') ?: twitchPreferences.channels?.also { twitchPreferences.channels = null }
-        channels?.forEach { tabAdapter.addFragment(it) }
-        val asList = channels?.toList() ?: emptyList()
-        binding.chatViewpager.offscreenPageLimit = calculatePageLimit(asList.size)
-        mainViewModel.channels.value = asList
+        val channels = twitchPreferences.getChannels()
+        channels.forEach { tabAdapter.addFragment(it) }
+        binding.chatViewpager.offscreenPageLimit = calculatePageLimit(channels.size)
         fetchStreamInformation()
 
         (requireActivity() as AppCompatActivity).apply {
@@ -246,6 +277,8 @@ class MainFragment : Fragment() {
             }
 
             if (savedInstanceState == null && !mainViewModel.started) {
+                mainViewModel.started = true // TODO ???
+
                 if (!twitchPreferences.hasMessageHistoryAcknowledged) {
                     MessageHistoryDisclaimerDialogFragment().show(parentFragmentManager, DISCLAIMER_TAG)
                 } else {
@@ -260,6 +293,7 @@ class MainFragment : Fragment() {
                         oAuth = oAuth,
                         id = id,
                         name = name,
+                        channelList = channels,
                         loadTwitchData = true,
                         loadHistory = shouldLoadHistory,
                         loadSupibot = shouldLoadSupibot,
@@ -282,11 +316,11 @@ class MainFragment : Fragment() {
     override fun onResume() {
         super.onResume()
         emoteMenuBottomSheetBehavior?.hide()
-        changeActionBarVisibility(mainViewModel.appbarEnabled.value ?: true)
+        changeActionBarVisibility(mainViewModel.appbarEnabled.value)
 
         (activity as? MainActivity)?.apply {
             if (channelToOpen.isNotBlank()) {
-                val index = mainViewModel.channels.value?.indexOf(channelToOpen) ?: -1
+                val index = mainViewModel.getChannels().indexOf(channelToOpen)
                 if (index >= 0) {
                     when (index) {
                         binding.chatViewpager.currentItem -> clearNotificationsOfChannel(channelToOpen)
@@ -295,7 +329,7 @@ class MainFragment : Fragment() {
                 }
                 channelToOpen = ""
             } else {
-                val activeChannel = mainViewModel.activeChannel.value ?: return
+                val activeChannel = mainViewModel.activeChannel.value
                 clearNotificationsOfChannel(activeChannel)
             }
         }
@@ -319,7 +353,7 @@ class MainFragment : Fragment() {
         with(menu) {
             val isLoggedIn = twitchPreferences.isLoggedIn
             val shouldShowProgress = mainViewModel.showUploadProgress.value ?: false
-            val hasChannels = !mainViewModel.channels.value.isNullOrEmpty()
+            val hasChannels = !mainViewModel.getChannels().isNullOrEmpty()
             val mentionIconColor = when (mainViewModel.shouldColorNotification.value) {
                 true -> R.color.color_error
                 else -> android.R.color.white
@@ -346,7 +380,7 @@ class MainFragment : Fragment() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
-            R.id.menu_reconnect -> mainViewModel.reconnect(false)
+            R.id.menu_reconnect -> mainViewModel.reconnect()
             R.id.menu_login -> navigateSafe(R.id.action_mainFragment_to_loginFragment).also { hideKeyboard() }
             R.id.menu_add -> openAddChannelDialog()
             R.id.menu_mentions -> mentionBottomSheetBehavior?.expand()
@@ -377,7 +411,17 @@ class MainFragment : Fragment() {
         val oAuth = twitchPreferences.oAuthKey ?: ""
         val name = twitchPreferences.userName ?: ""
         val id = twitchPreferences.userIdString ?: ""
-        mainViewModel.loadData(oAuth = oAuth, id = id, name = name, loadTwitchData = true, loadHistory = result, loadSupibot = shouldLoadSupibot, scrollBackLength = scrollBackLength)
+        val channels = twitchPreferences.getChannels()
+        mainViewModel.loadData(
+            oAuth = oAuth,
+            id = id,
+            name = name,
+            channelList = channels,
+            loadTwitchData = true,
+            loadHistory = result,
+            loadSupibot = shouldLoadSupibot,
+            scrollBackLength = scrollBackLength
+        )
 
         if (name.isNotBlank() && oAuth.isNotBlank()) {
             showSnackbar(getString(R.string.snackbar_login, name))
@@ -386,7 +430,7 @@ class MainFragment : Fragment() {
 
     fun addChannel(channel: String) {
         val lowerCaseChannel = channel.toLowerCase(Locale.getDefault())
-        val channels = mainViewModel.channels.value ?: emptyList()
+        val channels = mainViewModel.getChannels()
         if (!channels.contains(lowerCaseChannel)) {
             val oauth = twitchPreferences.oAuthKey ?: ""
             val id = twitchPreferences.userIdString ?: ""
@@ -395,17 +439,15 @@ class MainFragment : Fragment() {
             val scrollBackLength = ChatSettingsFragment.correctScrollbackLength(preferences.getInt(getString(R.string.preference_scrollback_length_key), 10))
 
             val updatedChannels = mainViewModel.joinChannel(lowerCaseChannel)
-            if (updatedChannels != null) {
-                mainViewModel.loadData(oauth, id, name = name, channelList = listOf(channel), loadTwitchData = false, loadHistory = shouldLoadHistory, loadSupibot = false, scrollBackLength)
-                twitchPreferences.channelsString = updatedChannels.joinToString(",")
+            mainViewModel.loadData(oauth, id, name = name, channelList = listOf(channel), loadTwitchData = false, loadHistory = shouldLoadHistory, loadSupibot = false, scrollBackLength)
+            twitchPreferences.channelsString = updatedChannels.joinToString(",")
 
-                tabAdapter.addFragment(lowerCaseChannel)
-                binding.chatViewpager.offscreenPageLimit = calculatePageLimit(updatedChannels.size)
-                binding.chatViewpager.setCurrentItem(updatedChannels.size - 1, false)
+            tabAdapter.addFragment(lowerCaseChannel)
+            binding.chatViewpager.offscreenPageLimit = calculatePageLimit(updatedChannels.size)
+            binding.chatViewpager.setCurrentItem(updatedChannels.size - 1, false)
 
-                fetchStreamInformation()
-                activity?.invalidateOptionsMenu()
-            }
+            fetchStreamInformation()
+            activity?.invalidateOptionsMenu()
         }
     }
 
@@ -415,6 +457,7 @@ class MainFragment : Fragment() {
         insertText(mention)
     }
 
+    // TODO
     fun whisperUser(user: String) {
         if (!binding.input.isEnabled) return
 
@@ -452,21 +495,18 @@ class MainFragment : Fragment() {
 
     private fun sendMessage(): Boolean {
         val msg = binding.input.text.toString()
-        val activeChannel = mainViewModel.activeChannel.value ?: return true
-        if (mainViewModel.mentionSheetOpen.value == true && mainViewModel.whisperTabSelected.value == true && !msg.startsWith("/w ")) return true
 
-        mainViewModel.sendMessage(activeChannel, msg)
+        mainViewModel.trySendMessage(msg)
         binding.input.setText("")
 
         return true
     }
 
     private fun getLastMessage(): Boolean {
-        mainViewModel.activeChannel.value?.let {
-            val lastMessage = mainViewModel.lastMessage[it] ?: return false
-            binding.input.setText(lastMessage)
-            binding.input.setSelection(lastMessage.length)
-        }
+        val lastMessage = mainViewModel.getLastMessage() ?: return false
+
+        binding.input.setText(lastMessage)
+        binding.input.setSelection(lastMessage.length)
         return true
     }
 
@@ -506,7 +546,7 @@ class MainFragment : Fragment() {
         val id = twitchPreferences.userIdString
 
         if (success && !oAuth.isNullOrBlank() && !name.isNullOrBlank() && !id.isNullOrBlank()) {
-            mainViewModel.close(name, oAuth, id, true)
+            mainViewModel.closeAndReconnect(name, oAuth, id, true)
             twitchPreferences.isLoggedIn = true
             showSnackbar(getString(R.string.snackbar_login, name))
         } else {
@@ -727,7 +767,7 @@ class MainFragment : Fragment() {
         .setMessage(getString(R.string.confirm_logout_message))
         .setPositiveButton(getString(R.string.confirm_logout_positive_button)) { dialog, _ ->
             twitchPreferences.clearLogin()
-            mainViewModel.close(name = "", oAuth = "", userId = "")
+            mainViewModel.closeAndReconnect(name = "", oAuth = "", userId = "")
             mainViewModel.clearIgnores()
             dialog.dismiss()
         }
@@ -742,7 +782,7 @@ class MainFragment : Fragment() {
     ).show(parentFragmentManager, DIALOG_TAG)
 
     private fun openChannel() {
-        val channel = mainViewModel.activeChannel.value ?: return
+        val channel = mainViewModel.activeChannel.value
         val url = "https://twitch.tv/$channel"
         Intent(Intent.ACTION_VIEW).also {
             it.data = url.toUri()
@@ -752,20 +792,18 @@ class MainFragment : Fragment() {
 
     private fun removeChannel() {
         val channels = mainViewModel.partChannel()
-        if (channels != null) {
-            val index = binding.chatViewpager.currentItem
-            if (channels.isNotEmpty()) {
-                twitchPreferences.channelsString = channels.joinToString(",")
-                val newPos = (index - 1).coerceAtLeast(0)
-                binding.chatViewpager.setCurrentItem(newPos, false)
-            } else {
-                twitchPreferences.channelsString = null
-            }
-
-            binding.chatViewpager.offscreenPageLimit = calculatePageLimit(channels.size)
-            tabAdapter.removeFragment(index)
-            activity?.invalidateOptionsMenu()
+        val index = binding.chatViewpager.currentItem
+        if (channels.isNotEmpty()) {
+            twitchPreferences.channelsString = channels.joinToString(",")
+            val newPos = (index - 1).coerceAtLeast(0)
+            binding.chatViewpager.setCurrentItem(newPos, false)
+        } else {
+            twitchPreferences.channelsString = null
         }
+
+        binding.chatViewpager.offscreenPageLimit = calculatePageLimit(channels.size)
+        tabAdapter.removeFragment(index)
+        activity?.invalidateOptionsMenu()
     }
 
     private fun BottomSheetBehavior<View>.setupMentionSheet() {

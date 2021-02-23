@@ -52,6 +52,7 @@ class ChatRepository(private val apiManager: ApiManager, private val emoteManage
     private var customMentionEntries = listOf<Mention>()
     private var blacklistEntries = listOf<Mention>()
     private var name: String = ""
+    private var lastMessage = mutableMapOf<String, String>()
 
     val activeChannel: StateFlow<String>
         get() = _activeChannel.asStateFlow()
@@ -68,7 +69,6 @@ class ChatRepository(private val apiManager: ApiManager, private val emoteManage
         get() = _whispers
 
     var startedConnection = false
-    var lastMessage = mutableMapOf<String, String>()
     var scrollbackLength = 500
         set(value) {
             messages.forEach { (_, messagesFlow) ->
@@ -122,20 +122,8 @@ class ChatRepository(private val apiManager: ApiManager, private val emoteManage
         }.let { Log.i(TAG, "Loading chatters for #$channel took $it ms") }
     }
 
-    fun setActiveChannel(channel: String?) {
+    fun setActiveChannel(channel: String) {
         _activeChannel.value = channel
-    }
-
-    fun setChannels(channels: List<String>) {
-        _channels.value = channels
-    }
-
-    fun removeChannelData(channel: String) {
-        messages[channel]?.value = emptyList()
-        messages.remove(channel)
-        lastMessage.remove(channel)
-        _channelMentionCount.firstValue.remove(channel)
-        apiManager.clearChannelFromLoaded(channel)
     }
 
     fun clearMentionCount(channel: String) = with(_channelMentionCount) {
@@ -150,9 +138,15 @@ class ChatRepository(private val apiManager: ApiManager, private val emoteManage
         messages[channel]?.value = emptyList()
     }
 
-    fun close(onClosed: () -> Unit = { }): Boolean {
+    fun closeAndReconnect(name: String, oAuth: String) {
+        val channels = channels.value
         startedConnection = false
-        return writeConnection.close(onClosed) && readConnection.close(onClosed)
+        val onClosed = { connectAndJoin(name, oAuth, channels) }
+
+        val didClose = writeConnection.close(onClosed) && readConnection.close(onClosed)
+        if (!didClose) {
+            connectAndJoin(name, oAuth, channels, forceConnect = true)
+        }
     }
 
     fun reconnect(onlyIfNecessary: Boolean) {
@@ -160,7 +154,10 @@ class ChatRepository(private val apiManager: ApiManager, private val emoteManage
         writeConnection.reconnect(onlyIfNecessary)
     }
 
-    fun sendMessage(channel: String, input: String) {
+    fun getLastMessage(): String? = lastMessage[activeChannel.value]
+
+    fun sendMessage(input: String) {
+        val channel = activeChannel.value
         prepareMessage(channel, input, writeConnection::sendMessage)
 
         val split = input.split(" ")
@@ -173,7 +170,49 @@ class ChatRepository(private val apiManager: ApiManager, private val emoteManage
         }
     }
 
-    fun connect(nick: String, oauth: String, forceConnect: Boolean = false) {
+    fun connectAndJoin(name: String, oAuth: String, channels: List<String>, forceConnect: Boolean = false) {
+        if (startedConnection) return
+
+        when {
+            channels.isNullOrEmpty() -> connect(name, oAuth, forceConnect)
+            else -> channels.forEachIndexed { i, channel ->
+                if (i == 0) {
+                    connect(name, oAuth, forceConnect)
+                }
+
+                joinChannel(channel)
+            }
+        }
+    }
+
+    fun joinChannel(channel: String): List<String> {
+        val channels = channels.value
+        if (channel in channels)
+            return channels
+
+        val updatedChannels = channels + channel
+        _channels.value = updatedChannels
+
+        createFlowsIfNecessary(channel)
+        readConnection.joinChannel(channel)
+        writeConnection.joinChannel(channel)
+
+        return updatedChannels
+    }
+
+    fun partActiveChannel(): List<String> {
+        val channel = activeChannel.value
+        val updatedChannels = channels.value - channel
+        _channels.value = updatedChannels
+
+        removeChannelData(channel)
+        readConnection.partChannel(channel)
+        writeConnection.partChannel(channel)
+
+        return updatedChannels
+    }
+
+    private fun connect(nick: String, oauth: String, forceConnect: Boolean = false) {
         if (!startedConnection) {
             name = nick
             readConnection.connect(nick, oauth, forceConnect)
@@ -182,15 +221,12 @@ class ChatRepository(private val apiManager: ApiManager, private val emoteManage
         }
     }
 
-    fun joinChannel(channel: String) {
-        createFlowsIfNecessary(channel)
-        readConnection.joinChannel(channel)
-        writeConnection.joinChannel(channel)
-    }
-
-    fun partChannel(channel: String) {
-        readConnection.partChannel(channel)
-        writeConnection.partChannel(channel)
+    private fun removeChannelData(channel: String) {
+        messages[channel]?.value = emptyList()
+        messages.remove(channel)
+        lastMessage.remove(channel)
+        _channelMentionCount.firstValue.remove(channel)
+        apiManager.clearChannelFromLoaded(channel)
     }
 
     private fun createFlowsIfNecessary(channel: String) {

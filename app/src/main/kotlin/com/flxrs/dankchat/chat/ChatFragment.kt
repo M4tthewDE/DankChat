@@ -17,12 +17,13 @@ import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.DividerItemDecoration
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.flxrs.dankchat.MainFragment
+import com.flxrs.dankchat.main.MainFragment
 import com.flxrs.dankchat.R
 import com.flxrs.dankchat.chat.user.UserPopupFragment
 import com.flxrs.dankchat.databinding.ChatFragmentBinding
 import com.flxrs.dankchat.preferences.DankChatPreferenceStore
 import com.flxrs.dankchat.service.twitch.emote.EmoteManager
+import com.flxrs.dankchat.utils.extensions.observe
 import com.flxrs.dankchat.utils.extensions.removeOAuthSuffix
 import com.flxrs.dankchat.utils.extensions.showShortSnackbar
 import dagger.hilt.android.AndroidEntryPoint
