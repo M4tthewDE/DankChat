@@ -195,6 +195,11 @@
     <string name="preference_user_long_click_title">User long click behavior</string>
     <string name="preference_user_long_click_summary_on">Regular click opens popup, long click mentions</string>
     <string name="preference_user_long_click_summary_off">Regular click mentions, long click opens popup</string>
+    <string name="preference_user_suggestions" translatable="false">preference_user_long_click</string>
+    <string name="preference_user_suggestions_summary_on" translatable="false">Users will be suggested while typing</string>
+    <string name="preference_user_suggestions_summary_off" translatable="false">Users will not be suggested while typing</string>
+    <string name="preference_user_suggestions_title" translatable="false">User suggestions</string>
+
 
     <plurals name="viewers">
         <item quantity="one">Live with %d viewer</item>
